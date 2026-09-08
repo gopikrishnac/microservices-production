@@ -53,7 +53,7 @@ jobs:
 
       - name: Run Unit Tests
         run: |
-          cd services/auth-service
+          cd ~/actions-runner/_work/*/*/services/auth-service
           if [ -f "package-lock.json" ]; then
             npm ci
           else
