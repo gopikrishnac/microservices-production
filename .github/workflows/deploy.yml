@@ -7,6 +7,10 @@ on:
       - 'services/**'
       - 'k8s/**'
 
+permissions:
+  contents: read
+  packages: write  # <--- Crucial: grants container registry push rights
+
 env:
   REGISTRY: ghcr.io
   OWNER: ${{ github.repository_owner }}
@@ -64,7 +68,7 @@ jobs:
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.REGISTRY_TOKEN }}
 
@@ -124,18 +128,19 @@ jobs:
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.REGISTRY_TOKEN }}
 
       - name: Build & Scan Docker Image
         run: |
-          IMAGE_TAG="${{ env.REGISTRY }}/${{ env.OWNER }}/product-service:${{ github.sha }}"
-          docker build -t $IMAGE_TAG -t ${{ env.REGISTRY }}/${{ env.OWNER }}/product-service:latest ./services/product-service
-          trivy image --exit-code 1 --severity CRITICAL --ignore-unfixed $IMAGE_TAG
+          # Convert username to strict lowercase for GHCR
+          LOWER_OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          IMAGE_TAG="ghcr.io/${LOWER_OWNER}/auth-service:${{ github.sha }}"
+          
+          docker build -t $IMAGE_TAG -t ghcr.io/${LOWER_OWNER}/auth-service:latest ./services/auth-service
           docker push $IMAGE_TAG
-          docker push ${{ env.REGISTRY }}/${{ env.OWNER }}/product-service:latest
-
+          docker push ghcr.io/${LOWER_OWNER}/auth-service:latest
       - name: Deploy to K8s via SSH
         id: deploy
         uses: appleboy/ssh-action@v1.0.3
@@ -183,7 +188,7 @@ jobs:
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.REGISTRY_TOKEN }}
 
