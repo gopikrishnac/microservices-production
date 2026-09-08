@@ -54,7 +54,11 @@ jobs:
       - name: Run Unit Tests
         run: |
           cd services/auth-service
-          npm ci
+          if [ -f "package-lock.json" ]; then
+            npm ci
+          else
+            npm install
+          fi
           npm test
 
       - name: Log in to GHCR
