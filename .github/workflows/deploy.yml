@@ -1,0 +1,220 @@
+name: Production CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'services/**'
+      - 'k8s/**'
+
+env:
+  REGISTRY: ghcr.io
+  OWNER: ${{ github.repository_owner }}
+
+jobs:
+  # ==========================================================
+  # STAGE 1: Detect Changed Paths
+  # ==========================================================
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      auth: ${{ steps.filter.outputs.auth }}
+      product: ${{ steps.filter.outputs.product }}
+      order: ${{ steps.filter.outputs.order }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Filter Changed Services
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            auth:
+              - 'services/auth-service/**'
+              - 'k8s/auth/**'
+            product:
+              - 'services/product-service/**'
+              - 'k8s/product/**'
+            order:
+              - 'services/order-service/**'
+              - 'k8s/order/**'
+
+  # ==========================================================
+  # STAGE 2: Auth Service (Node.js) Pipeline
+  # ==========================================================
+  auth-service:
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.auth == 'true' }}
+    runs-on: [self-hosted, cicd-runner]
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Run Unit Tests
+        run: |
+          cd services/auth-service
+          npm ci
+          npm test
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.REGISTRY_TOKEN }}
+
+      - name: Build & Scan Docker Image
+        run: |
+          IMAGE_TAG="${{ env.REGISTRY }}/${{ env.OWNER }}/auth-service:${{ github.sha }}"
+          docker build -t $IMAGE_TAG -t ${{ env.REGISTRY }}/${{ env.OWNER }}/auth-service:latest ./services/auth-service
+          trivy image --exit-code 1 --severity CRITICAL --ignore-unfixed $IMAGE_TAG
+          docker push $IMAGE_TAG
+          docker push ${{ env.REGISTRY }}/${{ env.OWNER }}/auth-service:latest
+
+      - name: Deploy to K8s via SSH
+        id: deploy
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.K8S_EC2_IP }}
+          username: ${{ secrets.K8S_EC2_USER }}
+          key: ${{ secrets.K8S_EC2_SSH_KEY }}
+          script: |
+            set -e
+            kubectl set image deployment/auth-service auth-service=${{ env.REGISTRY }}/${{ env.OWNER }}/auth-service:${{ github.sha }} -n production
+            if ! kubectl rollout status deployment/auth-service -n production --timeout=90s; then
+              echo "Rollout failed, rolling back..."
+              kubectl rollout undo deployment/auth-service -n production
+              exit 1
+            fi
+
+      - name: Send Slack Alert on Failure
+        if: failure() && steps.deploy.outcome == 'failure'
+        uses: slackapi/slack-github-action@v1.26.0
+        with:
+          payload: |
+            {
+              "text": "🚨 *Deployment Failed & Rolled Back: auth-service* \nCommit: `${{ github.sha }}` \n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|[View Logs]>"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
+
+  # ==========================================================
+  # STAGE 3: Product Service (Python) Pipeline
+  # ==========================================================
+  product-service:
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.product == 'true' }}
+    runs-on: [self-hosted, cicd-runner]
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Run Unit Tests
+        run: |
+          cd services/product-service
+          pip install --no-cache-dir -r requirements.txt
+          pytest test_main.py
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.REGISTRY_TOKEN }}
+
+      - name: Build & Scan Docker Image
+        run: |
+          IMAGE_TAG="${{ env.REGISTRY }}/${{ env.OWNER }}/product-service:${{ github.sha }}"
+          docker build -t $IMAGE_TAG -t ${{ env.REGISTRY }}/${{ env.OWNER }}/product-service:latest ./services/product-service
+          trivy image --exit-code 1 --severity CRITICAL --ignore-unfixed $IMAGE_TAG
+          docker push $IMAGE_TAG
+          docker push ${{ env.REGISTRY }}/${{ env.OWNER }}/product-service:latest
+
+      - name: Deploy to K8s via SSH
+        id: deploy
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.K8S_EC2_IP }}
+          username: ${{ secrets.K8S_EC2_USER }}
+          key: ${{ secrets.K8S_EC2_SSH_KEY }}
+          script: |
+            set -e
+            kubectl set image deployment/product-service product-service=${{ env.REGISTRY }}/${{ env.OWNER }}/product-service:${{ github.sha }} -n production
+            if ! kubectl rollout status deployment/product-service -n production --timeout=90s; then
+              echo "Rollout failed, rolling back..."
+              kubectl rollout undo deployment/product-service -n production
+              exit 1
+            fi
+
+      - name: Send Slack Alert on Failure
+        if: failure() && steps.deploy.outcome == 'failure'
+        uses: slackapi/slack-github-action@v1.26.0
+        with:
+          payload: |
+            {
+              "text": "🚨 *Deployment Failed & Rolled Back: product-service* \nCommit: `${{ github.sha }}` \n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|[View Logs]>"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
+
+  # ==========================================================
+  # STAGE 4: Order Service (Go) Pipeline
+  # ==========================================================
+  order-service:
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.order == 'true' }}
+    runs-on: [self-hosted, cicd-runner]
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Run Unit Tests
+        run: |
+          cd services/order-service
+          go test -v ./...
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.REGISTRY_TOKEN }}
+
+      - name: Build & Scan Docker Image
+        run: |
+          IMAGE_TAG="${{ env.REGISTRY }}/${{ env.OWNER }}/order-service:${{ github.sha }}"
+          docker build -t $IMAGE_TAG -t ${{ env.REGISTRY }}/${{ env.OWNER }}/order-service:latest ./services/order-service
+          trivy image --exit-code 1 --severity CRITICAL --ignore-unfixed $IMAGE_TAG
+          docker push $IMAGE_TAG
+          docker push ${{ env.REGISTRY }}/${{ env.OWNER }}/order-service:latest
+
+      - name: Deploy to K8s via SSH
+        id: deploy
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.K8S_EC2_IP }}
+          username: ${{ secrets.K8S_EC2_USER }}
+          key: ${{ secrets.K8S_EC2_SSH_KEY }}
+          script: |
+            set -e
+            kubectl set image deployment/order-service order-service=${{ env.REGISTRY }}/${{ env.OWNER }}/order-service:${{ github.sha }} -n production
+            if ! kubectl rollout status deployment/order-service -n production --timeout=90s; then
+              echo "Rollout failed, rolling back..."
+              kubectl rollout undo deployment/order-service -n production
+              exit 1
+            fi
+
+      - name: Send Slack Alert on Failure
+        if: failure() && steps.deploy.outcome == 'failure'
+        uses: slackapi/slack-github-action@v1.26.0
+        with:
+          payload: |
+            {
+              "text": "🚨 *Deployment Failed & Rolled Back: order-service* \nCommit: `${{ github.sha }}` \n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|[View Logs]>"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK

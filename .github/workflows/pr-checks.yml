@@ -1,0 +1,41 @@
+name: Pull Request Quality Checks
+
+on:
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  validate-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+          fetch-depth: 0
+
+      - name: Scan for Hardcoded Secrets (Gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Test Auth Service (Node.js)
+        run: |
+          cd services/auth-service
+          npm ci
+          npm test
+
+      - name: Test Product Service (Python)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: |
+          cd services/product-service
+          pip install --no-cache-dir -r requirements.txt
+          pytest test_main.py
+
+      - name: Test Order Service (Go)
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - run: |
+          cd services/order-service
+          go test -v ./...
