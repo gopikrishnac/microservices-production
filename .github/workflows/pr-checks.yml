@@ -20,7 +20,7 @@ jobs:
 
       - name: Test Auth Service (Node.js)
         run: |
-          cd services/auth-service
+          cd ~/actions-runner/_work/*/*/services/auth-service
           npm ci
           npm test
 
